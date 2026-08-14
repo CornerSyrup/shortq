@@ -1,4 +1,4 @@
-import puppeteer, { type CookieParam } from "puppeteer-core";
+import puppeteer, { type CookieData, type LaunchOptions } from "puppeteer-core";
 import { Effect } from "effect";
 import type { ResolvedConfig } from "./config";
 import { Logger } from "./logger";
@@ -7,13 +7,15 @@ export const capture = (config: ResolvedConfig) => Effect.gen(function* () {
   const logger = yield* Logger;
   yield* logger.info("Launching Chromium");
 
+  const launchOptions: LaunchOptions = {
+    headless: true,
+    args: process.env.SHOTQ_NO_SANDBOX === "1" ? ["--no-sandbox", "--disable-setuid-sandbox"] : [],
+    ...(config.executablePath ? { executablePath: config.executablePath } : {}),
+  };
+
   const browser = yield* Effect.acquireRelease(
     Effect.tryPromise({
-      try: () => puppeteer.launch({
-        headless: true,
-        executablePath: config.executablePath,
-        args: process.env.SHOTQ_NO_SANDBOX === "1" ? ["--no-sandbox", "--disable-setuid-sandbox"] : [],
-      }),
+      try: () => puppeteer.launch(launchOptions),
       catch: (cause) => new Error(`Unable to launch Chromium: ${message(cause)}`),
     }),
     (browser) => Effect.promise(() => browser.close()).pipe(Effect.ignore),
@@ -83,11 +85,17 @@ function wait(page: import("puppeteer-core").Page, selector: string, timeout: nu
   });
 }
 
-function parseCookieHeader(header: string, url: string): CookieParam[] {
+function parseCookieHeader(header: string, targetUrl: string): CookieData[] {
+  const domain = new URL(targetUrl).hostname;
   return header.split(";").map((part) => part.trim()).filter(Boolean).map((part) => {
     const equals = part.indexOf("=");
     if (equals <= 0) throw new Error(`Invalid cookie pair: ${JSON.stringify(part)}`);
-    return { name: part.slice(0, equals).trim(), value: part.slice(equals + 1).trim(), url };
+    return {
+      name: part.slice(0, equals).trim(),
+      value: part.slice(equals + 1).trim(),
+      domain,
+      path: "/",
+    };
   });
 }
 
