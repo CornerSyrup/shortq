@@ -48,10 +48,14 @@ const program = bootstrap.pipe(
   Effect.flatMap(run),
   Effect.catchAll((error) => Effect.sync(() => {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    process.exitCode = "exitCode" in Object(error) && typeof (error as { exitCode?: unknown }).exitCode === "number"
-      ? (error as { exitCode: number }).exitCode
-      : 1;
+    process.exitCode = getExitCode(error);
   })),
 );
+
+function getExitCode(error: unknown): number {
+  if (typeof error !== "object" || error === null || !("exitCode" in error)) return 1;
+  const exitCode = (error as { exitCode?: unknown }).exitCode;
+  return typeof exitCode === "number" ? exitCode : 1;
+}
 
 await Effect.runPromise(program);
