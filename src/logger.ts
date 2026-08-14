@@ -1,112 +1,88 @@
+import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { mkdir } from "node:fs/promises";
 import chalk from "chalk";
-import winston from "winston";
+import { Context, Effect, Layer } from "effect";
+
+export type LogLevel = "debug" | "info" | "success" | "warn" | "error";
+export type LogFields = Readonly<Record<string, unknown>>;
 
 export interface ShotqLogger {
-  debug(message: string): void;
-  info(message: string): void;
-  success(message: string): void;
-  warn(message: string): void;
-  error(message: string): void;
-  close(): Promise<void>;
+  readonly log: (level: LogLevel, message: string, fields?: LogFields) => Effect.Effect<void>;
+  readonly debug: (message: string, fields?: LogFields) => Effect.Effect<void>;
+  readonly info: (message: string, fields?: LogFields) => Effect.Effect<void>;
+  readonly success: (message: string, fields?: LogFields) => Effect.Effect<void>;
+  readonly warn: (message: string, fields?: LogFields) => Effect.Effect<void>;
+  readonly error: (message: string, fields?: LogFields) => Effect.Effect<void>;
 }
 
-interface LoggerOptions {
-  stdoutMode: boolean;
-  logFile?: string;
+export class Logger extends Context.Tag("shotq/Logger")<Logger, ShotqLogger>() {}
+
+export interface LoggerOptions {
+  readonly stdoutMode: boolean;
+  readonly logFile?: string;
 }
 
-const LEVELS = {
-  error: 0,
-  warn: 1,
-  success: 2,
-  info: 3,
-  debug: 4,
-};
-
-export async function createLogger(options: LoggerOptions): Promise<ShotqLogger> {
-  if (options.logFile) {
-    const parent = dirname(options.logFile);
-    if (parent !== ".") await mkdir(parent, { recursive: true });
-  }
-
-  const transports: winston.transport[] = [];
-
-  if (options.logFile) {
-    transports.push(new winston.transports.File({
-      filename: options.logFile,
-      level: "debug",
-      format: winston.format.combine(
-        winston.format.timestamp(),
-        winston.format.printf(({ timestamp, level, message }) =>
-          `${timestamp} ${String(level).toUpperCase().padEnd(7)} ${message}`,
-        ),
-      ),
-    }));
-  }
-
-  if (!(options.stdoutMode && options.logFile)) {
-    transports.push(new winston.transports.Console({
-      level: options.stdoutMode ? "warn" : "debug",
-      stderrLevels: ["warn", "error"],
-      consoleWarnLevels: [],
-      format: options.stdoutMode ? plainStderrFormat() : colouredCliFormat(),
-    }));
-  }
-
-  const logger = winston.createLogger({
-    levels: LEVELS,
-    level: "debug",
-    transports,
-  });
-
-  return {
-    debug: (message) => logger.debug(message),
-    info: (message) => logger.info(message),
-    success: (message) => logger.log("success", message),
-    warn: (message) => logger.warn(message),
-    error: (message) => logger.error(message),
-    close: () => closeLogger(logger),
-  };
-}
-
-function colouredCliFormat(): winston.Logform.Format {
-  return winston.format.printf(({ level, message }) => {
-    const text = String(message);
-    switch (level) {
-      case "error":
-        return chalk.red(`✗ ${text}`);
-      case "warn":
-        return chalk.yellow(`⚠ ${text}`);
-      case "success":
-        return chalk.green(`✓ ${text}`);
-      case "debug":
-        return chalk.dim(`· ${text}`);
-      default:
-        return chalk.cyan(`→ ${text}`);
+export const LoggerLive = (options: LoggerOptions) => Layer.effect(
+  Logger,
+  Effect.gen(function* () {
+    if (options.logFile) {
+      yield* Effect.tryPromise({
+        try: async () => {
+          const parent = dirname(options.logFile!);
+          if (parent !== ".") await mkdir(parent, { recursive: true });
+        },
+        catch: (cause) => cause,
+      }).pipe(Effect.orDie);
     }
-  });
-}
 
-function plainStderrFormat(): winston.Logform.Format {
-  return winston.format.printf(({ message }) => String(message));
-}
+    const writeFile = (level: LogLevel, message: string, fields?: LogFields) =>
+      options.logFile
+        ? Effect.tryPromise({
+            try: () => appendFile(options.logFile!, formatFile(level, message, fields), "utf8"),
+            catch: (cause) => cause,
+          }).pipe(Effect.orDie)
+        : Effect.void;
 
-async function closeLogger(logger: winston.Logger): Promise<void> {
-  if (logger.transports.length === 0) return;
-
-  await new Promise<void>((resolve) => {
-    let settled = false;
-    const finish = () => {
-      if (!settled) {
-        settled = true;
-        resolve();
+    const writeTerminal = (level: LogLevel, message: string, fields?: LogFields) => Effect.sync(() => {
+      if (options.stdoutMode && options.logFile) return;
+      if (options.stdoutMode) {
+        if (level === "warn" || level === "error") process.stderr.write(`${message}${formatFields(fields)}\n`);
+        return;
       }
-    };
+      const line = `${message}${formatFields(fields)}`;
+      if (level === "warn" || level === "error") process.stderr.write(`${colour(level, line)}\n`);
+      else process.stdout.write(`${colour(level, line)}\n`);
+    });
 
-    logger.once("finish", finish);
-    logger.end();
-    setTimeout(finish, 100).unref?.();
-  });
+    const log = (level: LogLevel, message: string, fields?: LogFields) =>
+      Effect.all([writeFile(level, message, fields), writeTerminal(level, message, fields)], { concurrency: 2 }).pipe(Effect.asVoid);
+
+    return {
+      log,
+      debug: (message, fields) => log("debug", message, fields),
+      info: (message, fields) => log("info", message, fields),
+      success: (message, fields) => log("success", message, fields),
+      warn: (message, fields) => log("warn", message, fields),
+      error: (message, fields) => log("error", message, fields),
+    } satisfies ShotqLogger;
+  }),
+);
+
+function formatFile(level: LogLevel, message: string, fields?: LogFields): string {
+  return `${new Date().toISOString()} ${level.toUpperCase().padEnd(7)} ${message}${formatFields(fields)}\n`;
+}
+
+function formatFields(fields?: LogFields): string {
+  if (!fields || Object.keys(fields).length === 0) return "";
+  return ` ${JSON.stringify(fields)}`;
+}
+
+function colour(level: LogLevel, text: string): string {
+  switch (level) {
+    case "error": return chalk.red(`✗ ${text}`);
+    case "warn": return chalk.yellow(`⚠ ${text}`);
+    case "success": return chalk.green(`✓ ${text}`);
+    case "debug": return chalk.dim(`· ${text}`);
+    case "info": return chalk.cyan(`→ ${text}`);
+  }
 }
