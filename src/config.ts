@@ -34,7 +34,7 @@ export async function loadConfig(path: string): Promise<FileConfig> {
   let source: string;
 
   try {
-    source = path === "-" ? await readFile(0, "utf8") : await readFile(path, "utf8");
+    source = path === "-" ? await Bun.stdin.text() : await readFile(path, "utf8");
   } catch (error) {
     throw new CliError(`Unable to read config ${JSON.stringify(path)}: ${errorMessage(error)}`);
   }
