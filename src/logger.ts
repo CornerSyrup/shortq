@@ -19,7 +19,7 @@ export class Logger extends Context.Tag("shotq/Logger")<Logger, ShotqLogger>() {
 
 export interface LoggerOptions {
   readonly stdoutMode: boolean;
-  readonly logFile?: string;
+  readonly logFile?: string | undefined;
 }
 
 export const LoggerLive = (options: LoggerOptions) => Layer.effect(
